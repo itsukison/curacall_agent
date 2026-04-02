@@ -1,0 +1,6 @@
+livekit-agents[codecs]~=1.0
+livekit-plugins-openai~=1.0
+livekit-plugins-google~=1.0
+livekit-plugins-silero~=1.0
+python-dotenv~=1.0
+httpx~=0.28
