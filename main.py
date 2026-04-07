@@ -1,11 +1,21 @@
 import asyncio
 import json
 import os
+import tempfile
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Allow Google credentials to be supplied as JSON string (e.g. on Railway)
+# instead of a file path. Write to a temp file and point the SDK at it.
+_creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+if _creds_json and not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+    _tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+    _tmp.write(_creds_json)
+    _tmp.close()
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = _tmp.name
 
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
 from livekit.agents.voice.agent_session import (
