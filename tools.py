@@ -105,9 +105,15 @@ async def check_availability(
     except Exception as e:
         data = {"error": str(e), "no_slots": True}
 
-    # Send periods to frontend
+    # Send periods to frontend + cache valid slot ISOs in session
     if "periods" in data:
         await _send_data(ctx.session, "availability_update", {"periods": data["periods"]})
+        # Store all valid slot_isos so book_appointment can validate against them
+        valid_isos: set[str] = ctx.session.userdata.get("valid_slot_isos") or set()
+        for period in data["periods"]:
+            for iso in period.get("slot_isos", []):
+                valid_isos.add(iso)
+        ctx.session.userdata["valid_slot_isos"] = valid_isos
     # Update collected data with treatment_id
     await _send_data(ctx.session, "collected_data_update", {"treatmentId": treatment_id})
     await _send_data(ctx.session, "tool_status", {"status": None})
@@ -123,6 +129,14 @@ async def book_appointment(
     start_time: str,
 ) -> dict:
     """予約を確定してDBに登録します。患者が「はい」と確認した後にのみ呼び出してください。"""
+    # Validate that start_time is one the system actually offered
+    valid_isos: set[str] = ctx.session.userdata.get("valid_slot_isos") or set()
+    if valid_isos and start_time not in valid_isos:
+        return {
+            "error": "指定された時刻はシステムが提示した候補に含まれていません。check_availabilityのslot_isosから正確にコピーしてください。",
+            "valid_slot_isos_sample": sorted(valid_isos)[:10],
+        }
+
     await _send_data(ctx.session, "tool_status", {"status": "予約を登録中..."})
 
     payload = {

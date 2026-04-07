@@ -26,7 +26,9 @@ def build_system_prompt(
     )
 
     jst = timezone(timedelta(hours=9))
-    today = datetime.now(jst).strftime("%Y-%m-%d (%A)")
+    now_jst = datetime.now(jst)
+    today = now_jst.strftime("%Y-%m-%d (%A)")
+    current_time = now_jst.strftime("%H:%M")
 
     required_items_notice = rules.get("required_items_notice")
     policy_text = rules.get("policy_text")
@@ -36,7 +38,7 @@ def build_system_prompt(
     closing_notice = f"\n   完了後必ず案内:「{required_items_notice}」" if required_items_notice else ""
 
     return f"""あなたは「{clinic_name}」の音声受付AIです。
-今日: {today}（JST）。相対日付はこの日付基準。
+今日: {today}（JST）、現在時刻: {current_time}。相対日付・時刻はこの基準。本日の予約は現在時刻以降のみ案内可。
 音声通話のため1〜2文で簡潔に。です・ます調で温かく対応。受付スタッフとして患者の言葉を受け止めてから次へ。
 ※STT誤変換あり。文脈から推測し、不明時のみ確認。
 
