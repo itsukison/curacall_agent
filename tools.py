@@ -1,11 +1,34 @@
 import json
 import os
+import re
+import unicodedata
 
 import httpx
 from livekit.agents import function_tool, RunContext
 
 NEXT_APP_URL = os.environ.get("NEXT_APP_URL", "http://localhost:3000")
 AGENT_INTERNAL_KEY = os.environ.get("AGENT_INTERNAL_KEY", "")
+
+
+def _headers() -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {AGENT_INTERNAL_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+# Persistent HTTP client — reuses TCP connections across all tool calls
+http_client = httpx.AsyncClient(
+    base_url=NEXT_APP_URL,
+    headers=_headers(),
+    timeout=15.0,
+)
+
+
+def normalize_phone(raw: str) -> str:
+    """Full-width → half-width, then strip non-digits."""
+    half = unicodedata.normalize("NFKC", raw)
+    return re.sub(r"\D", "", half)
 
 
 async def _send_data(session, msg_type: str, payload: dict) -> None:
@@ -18,13 +41,6 @@ async def _send_data(session, msg_type: str, payload: dict) -> None:
         message.encode("utf-8"),
         reliable=True,
     )
-
-
-def _headers() -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {AGENT_INTERNAL_KEY}",
-        "Content-Type": "application/json",
-    }
 
 
 def _clinic_id(ctx: RunContext) -> str:
@@ -40,7 +56,7 @@ async def update_collected_data(
     ctx: RunContext,
     patient_name: str | None = None,
     patient_phone: str | None = None,
-    symptom_id: str | None = None,
+    treatment_id: str | None = None,
     suggested_slot: str | None = None,
     suggested_slot_iso: str | None = None,
 ) -> dict:
@@ -50,8 +66,8 @@ async def update_collected_data(
         payload["patientName"] = patient_name
     if patient_phone is not None:
         payload["patientPhone"] = patient_phone
-    if symptom_id is not None:
-        payload["symptomId"] = symptom_id
+    if treatment_id is not None:
+        payload["treatmentId"] = treatment_id
     if suggested_slot is not None:
         payload["suggestedSlot"] = suggested_slot
     if suggested_slot_iso is not None:
@@ -64,26 +80,26 @@ async def update_collected_data(
 @function_tool()
 async def check_availability(
     ctx: RunContext,
-    symptom_id: str,
+    treatment_id: str,
     preferred_date: str | None = None,
+    preferred_hour: int | None = None,
 ) -> dict:
-    """症状に対応した空き予約枠を検索します。symptom_idは症状一覧から選んでください。preferred_dateはYYYY-MM-DD形式。"""
+    """治療メニューに対応した空き予約枠を検索します。treatment_idは治療メニュー一覧から選んでください。preferred_dateはYYYY-MM-DD形式。preferred_hourは患者の希望時間帯（0〜23の整数）。"""
     await _send_data(ctx.session, "tool_status", {"status": "空き枠を検索中..."})
 
     params: dict[str, str] = {
-        "symptomId": symptom_id,
+        "treatmentId": treatment_id,
         "clinicId": _clinic_id(ctx),
     }
     if preferred_date:
         params["preferredDate"] = preferred_date
+    if preferred_hour is not None:
+        params["preferredHour"] = str(preferred_hour)
 
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"{NEXT_APP_URL}/api/tools/check_availability",
+        resp = await http_client.get(
+                "/api/tools/check_availability",
                 params=params,
-                headers=_headers(),
-                timeout=15.0,
             )
         data = resp.json()
     except Exception as e:
@@ -92,8 +108,8 @@ async def check_availability(
     # Send periods to frontend
     if "periods" in data:
         await _send_data(ctx.session, "availability_update", {"periods": data["periods"]})
-    # Update collected data with symptom_id
-    await _send_data(ctx.session, "collected_data_update", {"symptomId": symptom_id})
+    # Update collected data with treatment_id
+    await _send_data(ctx.session, "collected_data_update", {"treatmentId": treatment_id})
     await _send_data(ctx.session, "tool_status", {"status": None})
     return data
 
@@ -103,28 +119,25 @@ async def book_appointment(
     ctx: RunContext,
     patient_name: str,
     patient_phone: str,
-    symptom_id: str,
+    treatment_id: str,
     start_time: str,
 ) -> dict:
-    """予約を確定してDBに登録します。患者が「はい」と確認した後にのみ呼び出してください。doctor_idは不要です。"""
+    """予約を確定してDBに登録します。患者が「はい」と確認した後にのみ呼び出してください。"""
     await _send_data(ctx.session, "tool_status", {"status": "予約を登録中..."})
 
     payload = {
         "patient_name": patient_name,
         "patient_phone": patient_phone,
-        "symptom_id": symptom_id,
+        "treatment_id": treatment_id,
         "start_time": start_time,
         "conversation_id": _conversation_id(ctx),
         "clinic_id": _clinic_id(ctx),
     }
 
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{NEXT_APP_URL}/api/tools/book_appointment",
+        resp = await http_client.post(
+                "/api/tools/book_appointment",
                 json=payload,
-                headers=_headers(),
-                timeout=15.0,
             )
         data = resp.json()
     except Exception as e:
@@ -165,12 +178,9 @@ async def transfer_to_human(
     }
 
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{NEXT_APP_URL}/api/tools/transfer_to_human",
+        resp = await http_client.post(
+                "/api/tools/transfer_to_human",
                 json=payload,
-                headers=_headers(),
-                timeout=15.0,
             )
         data = resp.json()
     except Exception as e:
@@ -178,4 +188,37 @@ async def transfer_to_human(
 
     await _send_data(ctx.session, "transferred", {})
     await _send_data(ctx.session, "tool_status", {"status": None})
+    return data
+
+
+@function_tool()
+async def identify_patient(
+    ctx: RunContext,
+    phone_number: str,
+) -> dict:
+    """再診患者を電話番号で検索します。患者が「再診」と答えて電話番号を伝えた後に呼び出してください。結果は患者に読み上げず、会話の文脈として使ってください。"""
+    normalized = normalize_phone(phone_number)
+
+    try:
+        resp = await http_client.post(
+                "/api/tools/identify_patient",
+                json={
+                    "clinic_id": _clinic_id(ctx),
+                    "phone_number": normalized,
+                },
+                timeout=1.5,
+            )
+        data = resp.json()
+    except Exception as e:
+        print(f"[identify_patient] failed: {e}")
+        return {"status": "new"}
+
+    # Push patient info to dashboard UI immediately
+    if data.get("status") == "returning":
+        patient = data.get("patient", {})
+        await _send_data(ctx.session, "collected_data_update", {
+            "patientName": patient.get("full_name", ""),
+            "patientPhone": normalized,
+        })
+
     return data
