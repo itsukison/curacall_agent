@@ -73,11 +73,11 @@ def build_system_prompt(
   - status:"returning" → 再診患者（patient.full_name, last_appointment, in_progress_treatments, approved_treatmentsを含む）
   - status:"lapsed" → 再初診（6ヶ月以上ぶり）
   - status:"error" → 照会失敗（患者に電話番号を再確認する）
-- check_availability: 治療メニューと希望日時判明後に呼出。treatment_idは上記一覧から選択。preferred_date(YYYY-MM-DD)、preferred_hour(0〜23整数)を設定可。返り値periods内:
-  - range: 受付可能な開始時刻範囲
+- check_availability: 治療メニューと希望日時判明後に呼出。treatment_idは上記一覧から選択。preferred_date(YYYY-MM-DD、JST基準)、preferred_hour(0〜23整数、JST基準)を設定可。返り値periods内:
+  - range: 受付可能な開始時刻範囲（JST時刻、HH:MM表示）
   - duration_minutes: 所要時間(分)
-  - slot_isos: 予約可能開始時刻のUTC ISO配列(15分刻み)
-- book_appointment: 患者確認後のみ呼出。start_timeはslot_isosから希望時刻以降で最も近いISOをそのまま使用(自分で構築禁止)
+  - slot_isos: 予約可能開始時刻のISO配列(UTC, 末尾Z)。患者に提示する場合はrangeのJST時刻を使い、ISO文字列は絶対に読み上げない
+- book_appointment: 患者確認後のみ呼出。start_timeは**必ずslot_isosの要素をそのままコピー**する。希望JST時刻に対応するISOをslot_isosから選ぶ（自分でISOを構築・変換・計算することは厳禁。タイムゾーン変換もしない）
 - transfer_to_human: AI対応不可・スタッフ要求時、またはidentify_patient連続失敗時
 
 【ツール発話ルール（厳守）】
