@@ -210,8 +210,18 @@ async def identify_patient(
     ctx: RunContext,
     phone_number: str,
 ) -> dict:
-    """再診患者を電話番号で検索します。患者が「再診」と答えて電話番号を伝えた後に呼び出してください。結果は患者に読み上げず、会話の文脈として使ってください。"""
+    """電話番号で患者を照会します。初診・再診どちらの場合でも、予約意向が確認できた時点で呼び出してください。結果は患者に読み上げず、会話の文脈として使ってください。
+
+    返り値 status:
+    - "new": DBに該当なし（初診扱い）
+    - "returning": 再診患者（patient.full_name, last_appointment, in_progress_treatments, approved_treatmentsを含む）
+    - "lapsed": 6ヶ月以上ぶりの再初診
+    - "error": 照会失敗（ネットワーク等）。患者に電話番号再確認を促す
+    """
     normalized = normalize_phone(phone_number)
+
+    if not normalized:
+        return {"status": "error", "message": "電話番号を抽出できませんでした"}
 
     try:
         resp = await http_client.post(
@@ -220,18 +230,23 @@ async def identify_patient(
                     "clinic_id": _clinic_id(ctx),
                     "phone_number": normalized,
                 },
-                timeout=1.5,
+                timeout=3.0,
             )
         data = resp.json()
     except Exception as e:
-        print(f"[identify_patient] failed: {e}")
-        return {"status": "new"}
+        print(f"[identify_patient] FAILED phone={normalized} error={type(e).__name__}: {e}")
+        return {"status": "error", "message": "患者照会に失敗しました"}
 
-    # Push patient info to dashboard UI immediately
-    if data.get("status") == "returning":
+    # Push patient info to dashboard UI immediately for returning/lapsed
+    if data.get("status") in ("returning", "lapsed"):
         patient = data.get("patient", {})
         await _send_data(ctx.session, "collected_data_update", {
             "patientName": patient.get("full_name", ""),
+            "patientPhone": normalized,
+        })
+    else:
+        # new or error — still surface the phone we captured
+        await _send_data(ctx.session, "collected_data_update", {
             "patientPhone": normalized,
         })
 
